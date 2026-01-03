@@ -338,6 +338,7 @@ fn services_try_into_quadlet_files<'a>(
             })?;
             let image = format!("{}.build", build.name()).try_into()?;
             service.image = Some(image);
+            service.pull_policy = None;
             Ok(quadlet::File {
                 name: build.name().to_owned(),
                 unit: unit.cloned(),
