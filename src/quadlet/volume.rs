@@ -107,11 +107,11 @@ impl TryFrom<compose_spec::Volume> for Volume {
             driver,
             driver_opts,
             labels,
-            name,
+            // Taken in `crate::cli::compose::volumes_try_into_quadlet_files()`.
+            name: _,
             extensions,
         }: compose_spec::Volume,
     ) -> Result<Self, Self::Error> {
-        ensure!(name.is_none(), "`name` is not supported");
         ensure!(
             extensions.is_empty(),
             "compose extensions are not supported"
