@@ -237,7 +237,7 @@ fn read_from_stdin(options: &Options) -> color_eyre::Result<compose_spec::Compos
 /// Returns an error if a [`Service`], [`Network`], or [`Volume`](compose_spec::Volume) could not be
 /// converted into a [`quadlet::File`].
 fn parts_try_into_files(
-    services: IndexMap<Identifier, Service>,
+    mut services: IndexMap<Identifier, Service>,
     networks: Networks,
     volumes: Volumes,
     pod_name: Option<String>,
@@ -257,6 +257,107 @@ fn parts_try_into_files(
             (name.clone(), has_options)
         })
         .collect();
+
+    let network_mappings: HashMap<&Identifier, Identifier> = networks
+        .iter()
+        .map(|(original_identifier, network)| {
+            network
+                .as_ref()
+                .map(|network| {
+                    network.name().map(|network_name| {
+                        Identifier::try_from(network_name.as_ref())
+                            .map(|identifier| (original_identifier, identifier))
+                            .wrap_err_with(|| format!("network name `{network_name}` cannot be used as Quadlet network name"))
+                    })
+                })
+                .flatten()
+        })
+        .flatten()
+        .collect::<Result<HashMap<_, _>, _>>()?;
+
+    let volume_mappings: HashMap<&Identifier, Identifier> = volumes
+            .iter()
+            .map(|(original_identifier, volume)| {
+                volume
+                    .as_ref()
+                    .map(|volume| {
+                        volume.name().map(|volume_name| {
+                            Identifier::try_from(volume_name.as_ref())
+                                .map(|identifier| (original_identifier, identifier))
+                                .wrap_err_with(|| format!("volume name `{volume_name}` cannot be used as Quadlet volume name"))
+                        })
+                    })
+                    .flatten()
+            })
+            .flatten()
+            .collect::<Result<HashMap<_, _>, _>>()?;
+
+    if !network_mappings.is_empty() {
+        services.iter_mut().for_each(|(_, service)| {
+            service.network_config.iter_mut().for_each(|network| {
+                if let compose_spec::service::NetworkConfig::Networks(networks) = network {
+                    match networks {
+                        compose_spec::ShortOrLong::Short(set) => {
+                            let mapped_identifiers = set
+                                .drain(..)
+                                .map(|identifier| {
+                                    network_mappings
+                                        .get(&identifier)
+                                        .cloned()
+                                        .unwrap_or(identifier)
+                                })
+                                .collect::<Vec<_>>();
+                            set.extend(mapped_identifiers);
+                        }
+                        compose_spec::ShortOrLong::Long(map) => {
+                            let mapped_identifiers = map
+                                .drain(..)
+                                .map(|(identifier, value)| {
+                                    (
+                                        network_mappings
+                                            .get(&identifier)
+                                            .cloned()
+                                            .unwrap_or(identifier),
+                                        value,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            map.extend(mapped_identifiers);
+                        }
+                    }
+                }
+            });
+
+            let mapped_identifiers = service
+                .volumes
+                .drain(..)
+                .map(|mut volume_short_or_long| {
+                    match volume_short_or_long {
+                        compose_spec::ShortOrLong::Short(_) => {} // ignored
+                        compose_spec::ShortOrLong::Long(ref mut mount) => {
+                            match mount {
+                                compose_spec::service::volumes::Mount::Volume(
+                                    ref mut volume_mount,
+                                ) => {
+                                    if let Some(identifier) = volume_mount.source.take() {
+                                        volume_mount.source = Some(
+                                            volume_mappings
+                                                .get(&identifier)
+                                                .cloned()
+                                                .unwrap_or(identifier),
+                                        )
+                                    }
+                                }
+                                _ => {} // ignored
+                            }
+                        }
+                    };
+                    volume_short_or_long
+                })
+                .collect::<Vec<_>>();
+            service.volumes.extend(mapped_identifiers);
+        });
+    }
 
     let mut pod_ports = Vec::new();
     let mut files = services_try_into_quadlet_files(
@@ -459,19 +560,20 @@ fn networks_try_into_quadlet_files<'a>(
     install: Option<&'a quadlet::Install>,
 ) -> impl Iterator<Item = color_eyre::Result<quadlet::File>> + 'a {
     networks.into_iter().map(move |(name, network)| {
-        let network = match network {
+        let mut network = match network {
             Some(Resource::Compose(network)) => network,
             None => Network::default(),
             Some(Resource::External { .. }) => {
                 bail!("external networks (`{name}`) are not supported");
             }
         };
+        let network_name = network.name.take();
         let network = quadlet::Network::try_from(network).wrap_err_with(|| {
             format!("error converting network `{name}` into a Quadlet network")
         })?;
 
         Ok(quadlet::File {
-            name: name.into(),
+            name: network_name.unwrap_or_else(|| name.into()),
             unit: unit.cloned(),
             resource: network.into(),
             globals: Globals::default(),
@@ -497,13 +599,14 @@ fn volumes_try_into_quadlet_files<'a>(
 ) -> impl Iterator<Item = color_eyre::Result<quadlet::File>> + 'a {
     volumes.into_iter().filter_map(move |(name, volume)| {
         volume.and_then(|volume| match volume {
-            Resource::Compose(volume) => (!volume.is_empty()).then(|| {
+            Resource::Compose(mut volume) => (!volume.is_empty()).then(|| {
+                let volume_name = volume.name.take();
                 quadlet::Volume::try_from(volume)
                     .wrap_err_with(|| {
                         format!("error converting volume `{name}` into a Quadlet volume")
                     })
                     .map(|volume| quadlet::File {
-                        name: name.into(),
+                        name: volume_name.unwrap_or_else(|| name.into()),
                         unit: unit.cloned(),
                         resource: volume.into(),
                         globals: Globals::default(),

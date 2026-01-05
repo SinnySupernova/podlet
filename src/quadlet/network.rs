@@ -114,7 +114,8 @@ impl TryFrom<compose_spec::Network> for Network {
             ipam,
             internal,
             labels,
-            name,
+            // Taken in `crate::cli::compose::networks_try_into_quadlet_files()`.
+            name: _,
             extensions,
         }: compose_spec::Network,
     ) -> Result<Self, Self::Error> {
@@ -127,7 +128,6 @@ impl TryFrom<compose_spec::Network> for Network {
 
         let unsupported_options = [
             ("attachable", !attachable),
-            ("name", name.is_none()),
             ("ipam.options", ipam_options.is_empty()),
         ];
         for (option, not_present) in unsupported_options {
