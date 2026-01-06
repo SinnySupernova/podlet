@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fs,
     io::{self, IsTerminal},
@@ -12,11 +13,15 @@ use color_eyre::{
     Help,
 };
 use compose_spec::{
-    service::Command, Identifier, Network, Networks, Options, Resource, Service, Volumes,
+    service::{Command, Condition},
+    Identifier, Network, Networks, Options, Resource, Service, Volumes,
 };
 use indexmap::IndexMap;
 
-use crate::quadlet::{self, container::volume::Source, Globals};
+use crate::{
+    cli::service::ServiceBuilder,
+    quadlet::{self, container::volume::Source, Globals},
+};
 
 use super::{k8s, Build, Container, File, GlobalArgs, Unit};
 
@@ -230,6 +235,28 @@ fn read_from_stdin(options: &Options) -> color_eyre::Result<compose_spec::Compos
         .wrap_err("data from stdin is not a valid compose file")
 }
 
+/// Validates that a service dependency condition matches any previously defined
+/// conditions for the same service and updates the map if needed.
+///
+/// # Errors
+///
+/// Returns an error if the map already contains an entry for the
+/// given service name with a different [`Condition`].
+fn ensure_dependency_is_valid(
+    dependency_type_map: &mut HashMap<Identifier, Condition>,
+    name: &Identifier,
+    depends_on_value: Cow<Condition>,
+) -> color_eyre::Result<()> {
+    if let Some(existing_condition) = dependency_type_map.get(name) {
+        if existing_condition != depends_on_value.as_ref() {
+            bail!("services that depend on service `{name}` cannot have different conditions");
+        }
+    } else {
+        dependency_type_map.insert(name.clone(), depends_on_value.into_owned());
+    }
+    Ok(())
+}
+
 /// Attempt to convert [`Service`]s, [`Networks`], and [`Volumes`] into [`File`]s.
 ///
 /// # Errors
@@ -244,6 +271,32 @@ fn parts_try_into_files(
     unit: Option<Unit>,
     install: Option<quadlet::Install>,
 ) -> color_eyre::Result<Vec<File>> {
+    // Map service dependencies to their conditions. Quadlet requires that all units
+    // depending on the same service use the same condition.
+    let mut dependency_type_map: HashMap<Identifier, Condition> = HashMap::new();
+    let _ = services
+        .iter()
+        .try_for_each(|(_, service)| -> Result<(), _> {
+            match &service.depends_on {
+                compose_spec::ShortOrLong::Short(set) => set.iter().try_for_each(|name| {
+                    ensure_dependency_is_valid(
+                        &mut dependency_type_map,
+                        name,
+                        Cow::Owned(Condition::ServiceStarted),
+                    )
+                }),
+                compose_spec::ShortOrLong::Long(map) => {
+                    map.iter().try_for_each(|(name, dependency)| {
+                        ensure_dependency_is_valid(
+                            &mut dependency_type_map,
+                            name,
+                            Cow::Borrowed(&dependency.condition),
+                        )
+                    })
+                }
+            }
+        })?;
+
     // Get a map of volumes to whether the volume has options associated with it for use in
     // converting a service into a Quadlet file. Extra volume options must be specified in a
     // separate Quadlet file which is referenced from the container Quadlet file.
@@ -367,6 +420,7 @@ fn parts_try_into_files(
         &volume_has_options,
         pod_name.as_deref(),
         &mut pod_ports,
+        &dependency_type_map,
     )
     .chain(networks_try_into_quadlet_files(
         networks,
@@ -409,6 +463,10 @@ fn parts_try_into_files(
 /// If `pod_name` is [`Some`] and a service has any published ports, they are taken from the
 /// created [`quadlet::Container`] and added to `pod_ports`.
 ///
+/// `dependency_type_map` should be a map from service [`Identifier`]s to their required
+/// [`Condition`]. It is used to ensure that all services depending on a specific target
+/// use a consistent dependency condition.
+///
 /// # Errors
 ///
 /// Returns an error if there was an error [adding](Unit::add_dependency()) a service
@@ -422,6 +480,7 @@ fn services_try_into_quadlet_files<'a>(
     volume_has_options: &'a HashMap<Identifier, bool>,
     pod_name: Option<&'a str>,
     pod_ports: &'a mut Vec<String>,
+    dependency_type_map: &'a HashMap<Identifier, Condition>,
 ) -> impl Iterator<Item = color_eyre::Result<quadlet::File>> + 'a {
     services.into_iter().flat_map(move |(name, mut service)| {
         let build = service.build.take().map(|build| {
@@ -455,6 +514,7 @@ fn services_try_into_quadlet_files<'a>(
             volume_has_options,
             pod_name,
             pod_ports,
+            dependency_type_map,
         );
 
         iter::once(container).chain(build)
@@ -470,6 +530,10 @@ fn services_try_into_quadlet_files<'a>(
 /// If `pod_name` is [`Some`] and the `service` has any published ports, they are taken from the
 /// created [`quadlet::Container`] and added to `pod_ports`.
 ///
+/// `dependency_type_map` should be a map from service [`Identifier`]s to their required
+/// [`Condition`]. It is used to ensure that all services depending on a specific target
+/// use a consistent dependency condition.
+///
 /// # Errors
 ///
 /// Returns an error if there was an error [adding](Unit::add_dependency()) a service
@@ -483,6 +547,7 @@ fn service_try_into_quadlet_file(
     volume_has_options: &HashMap<Identifier, bool>,
     pod_name: Option<&str>,
     pod_ports: &mut Vec<String>,
+    dependency_type_map: &HashMap<Identifier, Condition>,
 ) -> color_eyre::Result<quadlet::File> {
     // Add any service dependencies to the [Unit] section of the Quadlet file.
     let dependencies = mem::take(&mut service.depends_on).into_long();
@@ -525,6 +590,16 @@ fn service_try_into_quadlet_file(
         }
     }
 
+    let (oneshot, notify_healthy) = match dependency_type_map.get(&name) {
+        Some(Condition::ServiceCompletedSuccessfully) => (true, false),
+        Some(Condition::ServiceHealthy) => (false, true),
+        _ => (false, false),
+    };
+
+    if notify_healthy {
+        container.notify = quadlet::container::Notify::Healthy;
+    }
+
     let name = if let Some(pod_name) = pod_name {
         container.pod = Some(format!("{pod_name}.pod"));
         pod_ports.extend(mem::take(&mut container.publish_port));
@@ -533,12 +608,20 @@ fn service_try_into_quadlet_file(
         name.into()
     };
 
+    let mut service_builder = ServiceBuilder::new();
+    if let Some(restart) = restart {
+        service_builder.with_restart(restart);
+    }
+    if oneshot {
+        service_builder.oneshot();
+    }
+
     Ok(quadlet::File {
         name,
         unit,
         resource: container.into(),
         globals: global_args.into(),
-        service: restart.map(Into::into),
+        service: service_builder.build(),
         install,
     })
 }

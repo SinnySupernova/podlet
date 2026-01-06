@@ -8,6 +8,9 @@ pub struct Service {
     /// Configure if and when the service should be restarted
     #[arg(long, value_name = "POLICY")]
     restart: Option<RestartConfig>,
+    /// Whether the service should be treated as a one-time task
+    #[arg(long, value_name = "ONESHOT")]
+    oneshot: bool,
 }
 
 impl Service {
@@ -22,21 +25,11 @@ impl Display for Service {
         if let Some(restart) = self.restart.and_then(|restart| restart.to_possible_value()) {
             writeln!(f, "Restart={}", restart.get_name())?;
         }
-        Ok(())
-    }
-}
-
-impl From<RestartConfig> for Service {
-    fn from(restart: RestartConfig) -> Self {
-        Self {
-            restart: Some(restart),
+        if self.oneshot {
+            writeln!(f, "Type=oneshot")?;
+            writeln!(f, "RemainAfterExit=true")?;
         }
-    }
-}
-
-impl From<Restart> for Service {
-    fn from(restart: Restart) -> Self {
-        RestartConfig::from(restart).into()
+        Ok(())
     }
 }
 
@@ -61,6 +54,41 @@ impl From<Restart> for RestartConfig {
             Restart::No => Self::No,
             Restart::Always | Restart::UnlessStopped => Self::Always,
             Restart::OnFailure => Self::OnFailure,
+        }
+    }
+}
+
+pub struct ServiceBuilder {
+    restart: Option<Restart>,
+    oneshot: bool,
+}
+
+impl ServiceBuilder {
+    pub fn new() -> Self {
+        Self {
+            restart: None,
+            oneshot: false,
+        }
+    }
+
+    pub fn with_restart(&mut self, restart: Restart) -> &mut Self {
+        self.restart = Some(restart);
+        self
+    }
+
+    pub fn oneshot(&mut self) -> &mut Self {
+        self.oneshot = true;
+        self
+    }
+
+    pub fn build(self) -> Option<Service> {
+        if self.restart.is_none() && !self.oneshot {
+            None
+        } else {
+            Some(Service {
+                restart: self.restart.map(Into::into),
+                oneshot: self.oneshot,
+            })
         }
     }
 }
