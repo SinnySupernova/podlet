@@ -1,11 +1,8 @@
 use std::fmt::{self, Display, Formatter};
 
 use clap::Args;
-use color_eyre::{
-    eyre::{self, bail, eyre},
-    Section,
-};
-use compose_spec::service::{Condition, Dependency};
+use color_eyre::eyre::{self, bail};
+use compose_spec::service::Dependency;
 use serde::Serialize;
 
 use crate::serde::quadlet::quote_spaces_join_space;
@@ -109,27 +106,16 @@ impl Unit {
     ///
     /// # Errors
     ///
-    /// Returns an error if the [`Condition`] is not [`ServiceStarted`](Condition::ServiceStarted)
-    /// or the [`Dependency`] is set to `restart` but is not `required`.
+    /// Returns an error if the [`Dependency`] is set to `restart` but is not `required`.
     pub fn add_dependency(
         &mut self,
         mut name: String,
         Dependency {
-            condition,
+            condition: _,
             restart,
             required,
         }: Dependency,
     ) -> eyre::Result<()> {
-        match condition {
-            Condition::ServiceStarted => {}
-            Condition::ServiceHealthy => {
-                return Err(condition_eyre(condition, "Notify=healthy", "Container"));
-            }
-            Condition::ServiceCompletedSuccessfully => {
-                return Err(condition_eyre(condition, "Type=oneshot", "Service"));
-            }
-        }
-
         // Which list to add the dependency to depends on whether to restart this unit and if the
         // dependency is required.
         let list = match (restart, required) {
@@ -147,15 +133,6 @@ impl Unit {
 
         Ok(())
     }
-}
-
-/// Create an [`eyre::Report`] for an unsupported compose [`Dependency`] [`Condition`].
-///
-/// Suggests using `option` in `section` instead.
-fn condition_eyre(condition: Condition, option: &str, section: &str) -> eyre::Report {
-    eyre!("dependency condition `{condition}` is not directly supported").suggestion(format!(
-        "try using `{option}` in the [{section}] section of the dependency"
-    ))
 }
 
 impl Display for Unit {
