@@ -609,7 +609,7 @@ impl TryFrom<BindOptions> for Options {
     ) -> Result<Self, Self::Error> {
         ensure!(
             !create_host_path,
-            "`create_host_path` bind mount option is not supported"
+            "bind mount without `create_host_path: false` is not supported"
         );
         ensure!(
             extensions.is_empty(),
