@@ -629,7 +629,8 @@ impl From<NetworkInspect> for Network {
                     interface_name: Some(network_interface),
                     route: routes.iter().map(NetworkRoute::to_route_value).collect(),
                 },
-                name,
+                name: name.clone(),
+                network_name: Some(name),
             },
         }
     }

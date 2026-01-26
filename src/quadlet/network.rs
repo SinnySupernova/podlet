@@ -55,6 +55,10 @@ pub struct Network {
     )]
     pub label: Vec<String>,
 
+    /// Set custom network name.
+    #[serde(rename = "NetworkName")]
+    pub network_name: Option<String>,
+
     /// Set driver specific options.
     pub options: Vec<String>,
 
@@ -114,8 +118,7 @@ impl TryFrom<compose_spec::Network> for Network {
             ipam,
             internal,
             labels,
-            // Taken in `crate::cli::compose::networks_try_into_quadlet_files()`.
-            name: _,
+            name,
             extensions,
         }: compose_spec::Network,
     ) -> Result<Self, Self::Error> {
@@ -148,6 +151,7 @@ impl TryFrom<compose_spec::Network> for Network {
             ipam_driver,
             internal,
             label: labels.into_list().into_iter().collect(),
+            network_name: name,
             ..Self::default()
         };
 

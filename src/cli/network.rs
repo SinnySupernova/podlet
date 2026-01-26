@@ -110,6 +110,14 @@ pub struct Create {
     #[arg(long, value_name = "KEY=VALUE")]
     pub label: Vec<String>,
 
+    /// The name of the network to create
+    ///
+    /// Converts to "NetworkName=VALUE"
+    ///
+    /// Defaults to the value of [Self::name] if not specified
+    #[arg(long)]
+    pub network_name: Option<String>,
+
     /// Set driver specific options
     ///
     /// Converts to "Options=OPTION[,...]"
@@ -130,7 +138,7 @@ pub struct Create {
     #[command(flatten)]
     pub podman_args: PodmanArgs,
 
-    /// The name of the network to create
+    /// The name of the network file to create
     ///
     /// This will be used as the name of the generated file when used with
     /// the --file option without a filename
@@ -150,6 +158,7 @@ impl From<Create> for crate::quadlet::Network {
             ip_range: value.ip_range,
             ipv6: value.ipv6,
             label: value.label,
+            network_name: value.network_name,
             options: value.opt,
             podman_args: (!podman_args.is_empty()).then_some(podman_args),
             subnet: value.subnet,

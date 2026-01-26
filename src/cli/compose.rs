@@ -560,14 +560,14 @@ fn networks_try_into_quadlet_files<'a>(
     install: Option<&'a quadlet::Install>,
 ) -> impl Iterator<Item = color_eyre::Result<quadlet::File>> + 'a {
     networks.into_iter().map(move |(name, network)| {
-        let mut network = match network {
+        let network = match network {
             Some(Resource::Compose(network)) => network,
             None => Network::default(),
             Some(Resource::External { .. }) => {
                 bail!("external networks (`{name}`) are not supported");
             }
         };
-        let network_name = network.name.take();
+        let network_name = network.name.clone();
         let network = quadlet::Network::try_from(network).wrap_err_with(|| {
             format!("error converting network `{name}` into a Quadlet network")
         })?;
