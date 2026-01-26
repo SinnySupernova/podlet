@@ -599,8 +599,8 @@ fn volumes_try_into_quadlet_files<'a>(
 ) -> impl Iterator<Item = color_eyre::Result<quadlet::File>> + 'a {
     volumes.into_iter().filter_map(move |(name, volume)| {
         volume.and_then(|volume| match volume {
-            Resource::Compose(mut volume) => (!volume.is_empty()).then(|| {
-                let volume_name = volume.name.take();
+            Resource::Compose(volume) => (!volume.is_empty()).then(|| {
+                let volume_name = volume.name.clone();
                 quadlet::Volume::try_from(volume)
                     .wrap_err_with(|| {
                         format!("error converting volume `{name}` into a Quadlet volume")

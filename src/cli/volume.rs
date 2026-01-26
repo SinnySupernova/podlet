@@ -65,6 +65,14 @@ pub struct Create {
     #[arg(short, long, value_name = "OPTION")]
     pub opt: Vec<Opt>,
 
+    /// The name of the network to create
+    ///
+    /// Converts to "VolumeName=VALUE"
+    ///
+    /// Defaults to the value of [Self::name] if not specified
+    #[arg(long)]
+    pub volume_name: Option<String>,
+
     /// Set one or more OCI labels on the volume
     ///
     /// Converts to "Label=KEY=VALUE"
@@ -73,7 +81,7 @@ pub struct Create {
     #[arg(short, long, value_name = "KEY=VALUE")]
     pub label: Vec<String>,
 
-    /// The name of the volume to create
+    /// The name of the volume file to create
     ///
     /// This will be used as the name of the generated file when used with
     /// the --file option without a filename
@@ -87,11 +95,13 @@ impl From<Create> for crate::quadlet::Volume {
             opt,
             label,
             name: _,
+            volume_name,
         }: Create,
     ) -> Self {
         Self {
             driver,
             label,
+            volume_name,
             ..opt.into()
         }
     }

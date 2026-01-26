@@ -51,6 +51,10 @@ pub struct Volume {
 
     /// The host (numeric) UID, or user name to use as the owner for the volume.
     pub user: Option<String>,
+
+    /// Set custom volume name.
+    #[serde(rename = "VolumeName")]
+    pub volume_name: Option<String>,
 }
 
 impl HostPaths for Volume {
@@ -107,8 +111,7 @@ impl TryFrom<compose_spec::Volume> for Volume {
             driver,
             driver_opts,
             labels,
-            // Taken in `crate::cli::compose::volumes_try_into_quadlet_files()`.
-            name: _,
+            name,
             extensions,
         }: compose_spec::Volume,
     ) -> Result<Self, Self::Error> {
@@ -133,6 +136,7 @@ impl TryFrom<compose_spec::Volume> for Volume {
         Ok(Self {
             driver,
             label: labels.into_list().into_iter().collect(),
+            volume_name: name,
             ..options.into()
         })
     }

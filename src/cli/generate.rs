@@ -706,7 +706,8 @@ impl From<VolumeInspect> for Volume {
                     .into_iter()
                     .map(|(label, value)| format!("{label}={value}"))
                     .collect(),
-                name,
+                name: name.clone(),
+                volume_name: Some(name),
             },
         }
     }
