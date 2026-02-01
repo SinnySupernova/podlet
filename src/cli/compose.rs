@@ -309,10 +309,9 @@ fn parts_try_into_files(
         let mut unit = unit;
         if socket_activate {
             // Add socket dependency to the [Unit] section of the pod Quadlet file.
-            pod_sockets.into_iter().try_for_each(|socket_name| {
-                add_socket_dependency(&mut unit, socket_name)
-                    .wrap_err_with(|| format!("error adding socket dependency to pod `{name}`"))
-            })?;
+            pod_sockets
+                .into_iter()
+                .for_each(|socket_name| add_socket_dependency(&mut unit, socket_name));
         }
         let pod = quadlet::File {
             name,
@@ -488,10 +487,7 @@ fn service_try_into_quadlet_file(
         socket_resource_name.map(|n| pod_sockets.push(n));
     } else {
         // Add socket dependency to the [Unit] section of the Quadlet file.
-        socket_resource_name
-            .into_iter()
-            .try_for_each(|socket_name| add_socket_dependency(&mut unit, socket_name))
-            .wrap_err_with(|| format!("error adding socket dependency to service `{name}`"))?;
+        socket_resource_name.map(|socket_name| add_socket_dependency(&mut unit, socket_name));
     }
 
     let global_args = GlobalArgs::from_compose(&mut service);
@@ -607,13 +603,7 @@ fn volumes_try_into_quadlet_files<'a>(
 }
 
 /// Attempt to add a socket dependency to a [`Unit`].
-fn add_socket_dependency(unit: &mut Option<Unit>, socket_name: String) -> eyre::Result<()> {
+fn add_socket_dependency(unit: &mut Option<Unit>, socket_resource_name: String) {
     let unit = unit.get_or_insert_with(Unit::default);
-    unit.add_dependency(
-        socket_name,
-        Dependency {
-            required: true,
-            ..Dependency::default()
-        },
-    )
+    unit.add_socket_dependency(socket_resource_name, true)
 }
