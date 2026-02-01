@@ -335,7 +335,7 @@ fn parts_try_into_files(
 /// If `pod_name` is [`Some`] and a service has any published ports, they are taken from the
 /// created [`quadlet::Container`] and added to `pod_ports`.
 ///
-/// If `socket_activate_service` is `true` and a service has published ports,
+/// If `socket_activate` is `true` and a service has published ports,
 /// a `.socket` [`quadlet::File`] is created with those ports.
 ///
 /// # Errors
@@ -352,7 +352,7 @@ fn services_try_into_quadlet_files<'a>(
     volume_has_options: &'a HashMap<Identifier, bool>,
     pod_name: Option<&'a str>,
     pod_ports: &'a mut Vec<String>,
-    socket_activate_service: bool,
+    socket_activate: bool,
     pod_sockets: &'a mut Vec<String>,
 ) -> impl Iterator<Item = color_eyre::Result<quadlet::File>> + 'a {
     services.into_iter().flat_map(move |(name, mut service)| {
@@ -385,7 +385,7 @@ fn services_try_into_quadlet_files<'a>(
             return iter::once(result).chain(None).chain(None);
         }
 
-        let socket_resource = if socket_activate_service {
+        let socket_resource = if socket_activate {
             let socket = match quadlet::Socket::try_from(&service.ports) {
                 Ok(socket) => socket,
                 Err(err) => {
@@ -400,10 +400,6 @@ fn services_try_into_quadlet_files<'a>(
         } else {
             None
         };
-
-        let socket_resource_name = socket_resource
-            .as_ref()
-            .map(|r| r.name_to_service(name.as_str()));
 
         let socket = socket_resource.map(|resource| {
             Ok(quadlet::File {
@@ -427,7 +423,7 @@ fn services_try_into_quadlet_files<'a>(
             volume_has_options,
             pod_name,
             pod_ports,
-            socket_resource_name,
+            socket_activate,
             pod_sockets,
         );
 
@@ -444,7 +440,7 @@ fn services_try_into_quadlet_files<'a>(
 /// If `pod_name` is [`Some`] and the `service` has any published ports, they are taken from the
 /// created [`quadlet::Container`] and added to `pod_ports`.
 ///
-/// If `socket_resource_name` is [`Some`] and the service has published ports,
+/// If `socket_activate` is `true` and the service has published ports,
 /// a `.socket` [`quadlet::File`] is created with those ports. If `pod_name` is [`Some`], then
 /// socket name is added to `pod_sockets`, otherwise socket name is added to service dependencies.
 ///
@@ -461,7 +457,7 @@ fn service_try_into_quadlet_file(
     volume_has_options: &HashMap<Identifier, bool>,
     pod_name: Option<&str>,
     pod_ports: &mut Vec<String>,
-    socket_resource_name: Option<String>,
+    socket_activate: bool,
     pod_sockets: &mut Vec<String>,
 ) -> color_eyre::Result<quadlet::File> {
     // Add any service dependencies to the [Unit] section of the Quadlet file.
@@ -482,11 +478,14 @@ fn service_try_into_quadlet_file(
         }
     }
 
-    if pod_name.is_some() {
-        socket_resource_name.map(|n| pod_sockets.push(n));
-    } else {
-        // Add socket dependency to the [Unit] section of the Quadlet file.
-        socket_resource_name.map(|socket_name| add_socket_dependency(&mut unit, socket_name));
+    if socket_activate {
+        let socket_name = name.clone().into();
+        if pod_name.is_some() {
+            pod_sockets.push(socket_name);
+        } else {
+            // Add socket dependency to the [Unit] section of the Quadlet file.
+            add_socket_dependency(&mut unit, socket_name);
+        }
     }
 
     let global_args = GlobalArgs::from_compose(&mut service);
@@ -602,7 +601,7 @@ fn volumes_try_into_quadlet_files<'a>(
 }
 
 /// Attempt to add a socket dependency to a [`Unit`].
-fn add_socket_dependency(unit: &mut Option<Unit>, socket_resource_name: String) {
+fn add_socket_dependency(unit: &mut Option<Unit>, name: String) {
     let unit = unit.get_or_insert_with(Unit::default);
-    unit.add_socket_dependency(socket_resource_name, true)
+    unit.add_socket_dependency(name, true)
 }

@@ -148,12 +148,13 @@ impl Unit {
         Ok(())
     }
 
-    pub fn add_socket_dependency(&mut self, name: String, is_required: bool) {
+    pub fn add_socket_dependency(&mut self, mut name: String, is_required: bool) {
         let list = if is_required {
             &mut self.requires
         } else {
             &mut self.wants
         };
+        name.push_str(".socket");
         list.push(name.clone());
         self.after.push(name);
     }
