@@ -2,17 +2,19 @@ use std::{
     collections::HashMap,
     fs,
     io::{self, IsTerminal},
-    iter, mem,
+    iter::{self},
+    mem,
     path::{Path, PathBuf},
 };
 
 use clap::Args;
 use color_eyre::{
-    eyre::{bail, ensure, eyre, OptionExt, WrapErr},
+    eyre::{self, bail, ensure, eyre, OptionExt, WrapErr},
     Help,
 };
 use compose_spec::{
-    service::Command, Identifier, Network, Networks, Options, Resource, Service, Volumes,
+    service::{Command, Dependency},
+    Identifier, Network, Networks, Options, Resource, Service, Volumes,
 };
 use indexmap::IndexMap;
 
@@ -53,6 +55,11 @@ pub struct Compose {
     #[arg(long, conflicts_with = "kube")]
     pub pod: bool,
 
+    /// Create `.socket` files for each `.container` file that has published ports or
+    /// a single `.socket` file for the `.pod` file with published ports.
+    #[arg(long, conflicts_with = "kube")]
+    pub socket_activate: bool,
+
     /// Create a Kubernetes YAML file for a pod instead of separate containers
     ///
     /// A `.kube` file using the generated Kubernetes YAML file is also created.
@@ -91,6 +98,7 @@ impl Compose {
     ) -> color_eyre::Result<Vec<File>> {
         let Self {
             pod,
+            socket_activate,
             kube,
             compose_file,
         } = self;
@@ -149,8 +157,16 @@ impl Compose {
                 "compose extensions are not supported"
             );
 
-            parts_try_into_files(services, networks, volumes, pod_name, unit, install)
-                .wrap_err("error converting compose file into Quadlet files")
+            parts_try_into_files(
+                services,
+                networks,
+                volumes,
+                pod_name,
+                socket_activate,
+                unit,
+                install,
+            )
+            .wrap_err("error converting compose file into Quadlet files")
         }
     }
 }
@@ -235,12 +251,14 @@ fn read_from_stdin(options: &Options) -> color_eyre::Result<compose_spec::Compos
 /// # Errors
 ///
 /// Returns an error if a [`Service`], [`Network`], or [`Volume`](compose_spec::Volume) could not be
-/// converted into a [`quadlet::File`].
+/// converted into a [`quadlet::File`], or if published service ports could not be converted
+/// into a socket [`quadlet::File`] file.
 fn parts_try_into_files(
     services: IndexMap<Identifier, Service>,
     networks: Networks,
     volumes: Volumes,
     pod_name: Option<String>,
+    socket_activate: bool,
     unit: Option<Unit>,
     install: Option<quadlet::Install>,
 ) -> color_eyre::Result<Vec<File>> {
@@ -259,6 +277,7 @@ fn parts_try_into_files(
         .collect();
 
     let mut pod_ports = Vec::new();
+    let mut pod_sockets = Vec::new();
     let mut files = services_try_into_quadlet_files(
         services,
         unit.as_ref(),
@@ -266,6 +285,8 @@ fn parts_try_into_files(
         &volume_has_options,
         pod_name.as_deref(),
         &mut pod_ports,
+        pod_name.is_none() && socket_activate,
+        &mut pod_sockets,
     )
     .chain(networks_try_into_quadlet_files(
         networks,
@@ -285,6 +306,14 @@ fn parts_try_into_files(
             publish_port: pod_ports,
             ..quadlet::Pod::default()
         };
+        let mut unit = unit;
+        if socket_activate {
+            // Add socket dependency to the [Unit] section of the pod Quadlet file.
+            pod_sockets.into_iter().try_for_each(|socket_name| {
+                add_socket_dependency(&mut unit, socket_name)
+                    .wrap_err_with(|| format!("error adding socket dependency to pod `{name}`"))
+            })?;
+        }
         let pod = quadlet::File {
             name,
             unit,
@@ -308,11 +337,15 @@ fn parts_try_into_files(
 /// If `pod_name` is [`Some`] and a service has any published ports, they are taken from the
 /// created [`quadlet::Container`] and added to `pod_ports`.
 ///
+/// If `socket_activate_service` is `true` and a service has published ports,
+/// a `.socket` [`quadlet::File`] is created with those ports.
+///
 /// # Errors
 ///
 /// Returns an error if there was an error [adding](Unit::add_dependency()) a service
 /// [`Dependency`](compose_spec::service::Dependency) to the [`Unit`], converting the
-/// [`Build`](compose_spec::service::Build) section into a [`quadlet::Build`] file, or converting
+/// [`Build`](compose_spec::service::Build) section into a [`quadlet::Build`] file,
+/// converting published ports to a [`quadlet::Socket`] file or converting
 /// the [`Service`] into a [`quadlet::Container`] file.
 fn services_try_into_quadlet_files<'a>(
     services: IndexMap<Identifier, Service>,
@@ -321,12 +354,15 @@ fn services_try_into_quadlet_files<'a>(
     volume_has_options: &'a HashMap<Identifier, bool>,
     pod_name: Option<&'a str>,
     pod_ports: &'a mut Vec<String>,
+    socket_activate_service: bool,
+    pod_sockets: &'a mut Vec<String>,
 ) -> impl Iterator<Item = color_eyre::Result<quadlet::File>> + 'a {
     services.into_iter().flat_map(move |(name, mut service)| {
         if service.image.is_some() && service.build.is_some() {
             return iter::once(Err(eyre!(
                 "error converting service `{name}`: `image` and `build` cannot both be set"
             )))
+            .chain(None)
             .chain(None);
         }
 
@@ -348,8 +384,42 @@ fn services_try_into_quadlet_files<'a>(
             })
         });
         if let Some(result @ Err(_)) = build {
-            return iter::once(result).chain(None);
+            return iter::once(result).chain(None).chain(None);
         }
+
+        let socket_resource = if socket_activate_service {
+            let socket = match quadlet::Socket::try_from(&service.ports) {
+                Ok(socket) => socket,
+                Err(err) => {
+                    return iter::once(Err(err)).chain(None).chain(None);
+                }
+            };
+            if socket.listen_stream.is_empty() {
+                None
+            } else {
+                Some(quadlet::Resource::Socket(socket))
+            }
+        } else {
+            None
+        };
+
+        let socket_resource_name = socket_resource
+            .as_ref()
+            .map(|r| r.name_to_service(name.as_str()));
+
+        let socket = socket_resource.map(|resource| {
+            Ok(quadlet::File {
+                name: name.clone().into(),
+                unit: unit.cloned(),
+                resource,
+                globals: Globals::default(),
+                service: None,
+                install: Some(quadlet::Install {
+                    required_by: Vec::new(),
+                    wanted_by: vec!["socket.target".to_owned()],
+                }),
+            })
+        });
 
         let container = service_try_into_quadlet_file(
             service,
@@ -359,9 +429,11 @@ fn services_try_into_quadlet_files<'a>(
             volume_has_options,
             pod_name,
             pod_ports,
+            socket_resource_name,
+            pod_sockets,
         );
 
-        iter::once(container).chain(build)
+        iter::once(container).chain(build).chain(socket)
     })
 }
 
@@ -373,6 +445,10 @@ fn services_try_into_quadlet_files<'a>(
 ///
 /// If `pod_name` is [`Some`] and the `service` has any published ports, they are taken from the
 /// created [`quadlet::Container`] and added to `pod_ports`.
+///
+/// If `socket_resource_name` is [`Some`] and the service has published ports,
+/// a `.socket` [`quadlet::File`] is created with those ports. If `pod_name` is [`Some`], then
+/// socket name is added to `pod_sockets`, otherwise socket name is added to service dependencies.
 ///
 /// # Errors
 ///
@@ -387,6 +463,8 @@ fn service_try_into_quadlet_file(
     volume_has_options: &HashMap<Identifier, bool>,
     pod_name: Option<&str>,
     pod_ports: &mut Vec<String>,
+    socket_resource_name: Option<String>,
+    pod_sockets: &mut Vec<String>,
 ) -> color_eyre::Result<quadlet::File> {
     // Add any service dependencies to the [Unit] section of the Quadlet file.
     let dependencies = mem::take(&mut service.depends_on).into_long();
@@ -404,6 +482,16 @@ fn service_try_into_quadlet_file(
                 format!("error adding dependency on `{ident}` to service `{name}`")
             })?;
         }
+    }
+
+    if pod_name.is_some() {
+        socket_resource_name.map(|n| pod_sockets.push(n));
+    } else {
+        // Add socket dependency to the [Unit] section of the Quadlet file.
+        socket_resource_name
+            .into_iter()
+            .try_for_each(|socket_name| add_socket_dependency(&mut unit, socket_name))
+            .wrap_err_with(|| format!("error adding socket dependency to service `{name}`"))?;
     }
 
     let global_args = GlobalArgs::from_compose(&mut service);
@@ -516,4 +604,16 @@ fn volumes_try_into_quadlet_files<'a>(
             }
         })
     })
+}
+
+/// Attempt to add a socket dependency to a [`Unit`].
+fn add_socket_dependency(unit: &mut Option<Unit>, socket_name: String) -> eyre::Result<()> {
+    let unit = unit.get_or_insert_with(Unit::default);
+    unit.add_dependency(
+        socket_name,
+        Dependency {
+            required: true,
+            ..Dependency::default()
+        },
+    )
 }

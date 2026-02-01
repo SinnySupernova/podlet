@@ -6,6 +6,7 @@ mod install;
 pub mod kube;
 mod network;
 mod pod;
+mod socket;
 mod volume;
 
 use std::{
@@ -29,6 +30,7 @@ pub use self::{
     kube::Kube,
     network::{IpRange, Network},
     pod::Pod,
+    socket::Socket,
     volume::Volume,
 };
 use crate::cli::{service::Service, unit::Unit};
@@ -92,6 +94,7 @@ pub enum Resource {
     Volume(Volume),
     Build(Box<Build>),
     Image(Image),
+    Socket(Socket),
 }
 
 impl Display for Resource {
@@ -104,6 +107,7 @@ impl Display for Resource {
             Self::Volume(volume) => volume.fmt(f),
             Self::Build(build) => build.fmt(f),
             Self::Image(image) => image.fmt(f),
+            Self::Socket(socket) => socket.fmt(f),
         }
     }
 }
@@ -178,8 +182,13 @@ impl Resource {
             Self::Volume(_) => format!("{name}-volume"),
             Self::Build(_) => format!("{name}-build"),
             Self::Image(_) => format!("{name}-image"),
+            Self::Socket(_) => format!("{name}-socket"),
         };
-        service.push_str(".service");
+        if let Self::Socket(_) = self {
+            service.push_str(".socket");
+        } else {
+            service.push_str(".service");
+        }
         service
     }
 }
@@ -194,12 +203,13 @@ impl HostPaths for Resource {
             Self::Volume(volume) => ResourceIter::Volume(volume.host_paths()),
             Self::Build(build) => ResourceIter::Build(build.host_paths()),
             Self::Image(image) => ResourceIter::Image(image.host_paths()),
+            Self::Socket(_) => ResourceIter::Socket(iter::empty()),
         }
     }
 }
 
 /// [`Iterator`] for all [`Resource`] types.
-enum ResourceIter<C, P, K, N, V, B, I> {
+enum ResourceIter<C, P, K, N, V, B, I, S> {
     Container(C),
     Pod(P),
     Kube(K),
@@ -207,9 +217,10 @@ enum ResourceIter<C, P, K, N, V, B, I> {
     Volume(V),
     Build(B),
     Image(I),
+    Socket(S),
 }
 
-impl<C, P, K, N, V, B, I, Item> Iterator for ResourceIter<C, P, K, N, V, B, I>
+impl<C, P, K, N, V, B, I, S, Item> Iterator for ResourceIter<C, P, K, N, V, B, I, S>
 where
     C: Iterator<Item = Item>,
     P: Iterator<Item = Item>,
@@ -218,6 +229,7 @@ where
     V: Iterator<Item = Item>,
     B: Iterator<Item = Item>,
     I: Iterator<Item = Item>,
+    S: Iterator<Item = Item>,
 {
     type Item = Item;
 
@@ -230,6 +242,7 @@ where
             Self::Volume(iter) => iter.next(),
             Self::Build(iter) => iter.next(),
             Self::Image(iter) => iter.next(),
+            Self::Socket(iter) => iter.next(),
         }
     }
 }
@@ -244,6 +257,7 @@ impl Downgrade for Resource {
             Self::Volume(volume) => volume.downgrade(version),
             Self::Build(build) => build.downgrade(version),
             Self::Image(image) => image.downgrade(version),
+            Self::Socket(_) => Ok(()),
         }
     }
 }
@@ -258,6 +272,7 @@ pub enum ResourceKind {
     Volume,
     Build,
     Image,
+    Socket,
 }
 
 impl ResourceKind {
@@ -271,6 +286,7 @@ impl ResourceKind {
             Self::Volume => "volume",
             Self::Build => "build",
             Self::Image => "image",
+            Self::Socket => "socket",
         }
     }
 }
@@ -291,6 +307,7 @@ impl From<&Resource> for ResourceKind {
             Resource::Volume(_) => Self::Volume,
             Resource::Build(_) => Self::Build,
             Resource::Image(_) => Self::Image,
+            Resource::Socket(_) => Self::Socket,
         }
     }
 }
