@@ -409,7 +409,7 @@ fn services_try_into_quadlet_files<'a>(
             service: None,
             install: Some(quadlet::Install {
                 required_by: Vec::new(),
-                wanted_by: vec!["socket.target".to_owned()],
+                wanted_by: vec!["sockets.target".to_owned()],
             }),
         });
 
