@@ -9,12 +9,11 @@ use std::{
 
 use clap::Args;
 use color_eyre::{
-    eyre::{self, bail, ensure, eyre, OptionExt, WrapErr},
+    eyre::{bail, ensure, eyre, OptionExt, WrapErr},
     Help,
 };
 use compose_spec::{
-    service::{Command, Dependency},
-    Identifier, Network, Networks, Options, Resource, Service, Volumes,
+    service::Command, Identifier, Network, Networks, Options, Resource, Service, Volumes,
 };
 use indexmap::IndexMap;
 
@@ -285,7 +284,7 @@ fn parts_try_into_files(
         &volume_has_options,
         pod_name.as_deref(),
         &mut pod_ports,
-        pod_name.is_none() && socket_activate,
+        socket_activate,
         &mut pod_sockets,
     )
     .chain(networks_try_into_quadlet_files(
