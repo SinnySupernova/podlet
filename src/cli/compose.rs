@@ -401,18 +401,16 @@ fn services_try_into_quadlet_files<'a>(
             None
         };
 
-        let socket = socket_resource.map(|resource| {
-            Ok(quadlet::File {
-                name: name.clone().into(),
-                unit: unit.cloned(),
-                resource,
-                globals: Globals::default(),
-                service: None,
-                install: Some(quadlet::Install {
-                    required_by: Vec::new(),
-                    wanted_by: vec!["socket.target".to_owned()],
-                }),
-            })
+        let socket = socket_resource.map(|resource| quadlet::File {
+            name: name.clone().into(),
+            unit: unit.cloned(),
+            resource,
+            globals: Globals::default(),
+            service: None,
+            install: Some(quadlet::Install {
+                required_by: Vec::new(),
+                wanted_by: vec!["socket.target".to_owned()],
+            }),
         });
 
         let container = service_try_into_quadlet_file(
@@ -423,11 +421,11 @@ fn services_try_into_quadlet_files<'a>(
             volume_has_options,
             pod_name,
             pod_ports,
-            socket_activate,
+            socket_activate && socket.is_some(),
             pod_sockets,
         );
 
-        iter::once(container).chain(build).chain(socket)
+        iter::once(container).chain(build).chain(socket.map(Ok))
     })
 }
 
@@ -440,9 +438,8 @@ fn services_try_into_quadlet_files<'a>(
 /// If `pod_name` is [`Some`] and the `service` has any published ports, they are taken from the
 /// created [`quadlet::Container`] and added to `pod_ports`.
 ///
-/// If `socket_activate` is `true` and the service has published ports,
-/// a `.socket` [`quadlet::File`] is created with those ports. If `pod_name` is [`Some`], then
-/// socket name is added to `pod_sockets`, otherwise socket name is added to service dependencies.
+/// When `add_socket` is `true`: if `pod_name` is [`Some`], then the socket name is
+/// added to `pod_sockets`, otherwise socket name is added to service dependencies.
 ///
 /// # Errors
 ///
@@ -457,7 +454,7 @@ fn service_try_into_quadlet_file(
     volume_has_options: &HashMap<Identifier, bool>,
     pod_name: Option<&str>,
     pod_ports: &mut Vec<String>,
-    socket_activate: bool,
+    add_socket: bool,
     pod_sockets: &mut Vec<String>,
 ) -> color_eyre::Result<quadlet::File> {
     // Add any service dependencies to the [Unit] section of the Quadlet file.
@@ -478,7 +475,7 @@ fn service_try_into_quadlet_file(
         }
     }
 
-    if socket_activate {
+    if add_socket {
         let socket_name = name.clone().into();
         if pod_name.is_some() {
             pod_sockets.push(socket_name);
