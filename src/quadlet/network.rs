@@ -54,6 +54,10 @@ pub struct Network {
     #[serde(serialize_with = "seq_quote_whitespace")]
     pub label: Vec<String>,
 
+    /// Override the name of the Podman network created by this Quadlet.
+    #[expect(clippy::struct_field_names, reason = "Quadlet option")]
+    pub network_name: Option<String>,
+
     /// Set driver specific options.
     pub options: Vec<String>,
 
@@ -82,6 +86,14 @@ impl Downgrade for Network {
         }
 
         if version < PodmanVersion::V4_7 {
+            if let Some(network_name) = self.network_name.take() {
+                return Err(DowngradeError::Option {
+                    quadlet_option: "NetworkName",
+                    value: network_name,
+                    supported_version: PodmanVersion::V4_7,
+                });
+            }
+
             for dns in std::mem::take(&mut self.dns) {
                 self.push_arg("dns", &dns);
             }
@@ -113,7 +125,7 @@ impl TryFrom<compose_spec::Network> for Network {
             ipam,
             internal,
             labels,
-            name,
+            name: network_name,
             extensions,
         }: compose_spec::Network,
     ) -> Result<Self, Self::Error> {
@@ -126,7 +138,6 @@ impl TryFrom<compose_spec::Network> for Network {
 
         let unsupported_options = [
             ("attachable", !attachable),
-            ("name", name.is_none()),
             ("ipam.options", ipam_options.is_empty()),
         ];
         for (option, not_present) in unsupported_options {
@@ -147,6 +158,7 @@ impl TryFrom<compose_spec::Network> for Network {
             ipam_driver,
             internal,
             label: labels.into_list().into_iter().collect(),
+            network_name,
             ..Self::default()
         };
 
@@ -267,6 +279,51 @@ mod tests {
         assert_eq!(
             crate::serde::quadlet::to_string_join_all(network)?,
             "[Network]\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compose_network_name() -> Result<(), crate::serde::quadlet::Error> {
+        let network = compose_spec::Network {
+            name: Some("explicit-network-name".into()),
+            ..compose_spec::Network::default()
+        };
+        let network = Network::try_from(network).unwrap();
+
+        assert_eq!(
+            crate::serde::quadlet::to_string_join_all(network)?,
+            "[Network]\nNetworkName=explicit-network-name\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn network_name_added_in_v4_7() -> color_eyre::Result<()> {
+        let mut network = Network {
+            network_name: Some("explicit-network-name".into()),
+            ..Network::default()
+        };
+
+        let error = network
+            .downgrade(PodmanVersion::V4_6)
+            .err()
+            .ok_or_else(|| eyre!("expected NetworkName to be rejected before Podman v4.7"))?;
+
+        assert_eq!(
+            error.to_string(),
+            "Quadlet option `NetworkName=explicit-network-name` was not supported until Podman v4.7"
+        );
+
+        let mut network = Network {
+            network_name: Some("explicit-network-name".into()),
+            ..Network::default()
+        };
+
+        network.downgrade(PodmanVersion::V4_7)?;
+        assert_eq!(
+            network.network_name.as_deref(),
+            Some("explicit-network-name")
         );
         Ok(())
     }
